@@ -39,6 +39,12 @@ This writes:
 - `./generated/convex_types.rs`
 - `./generated/convex_api.rs`
 
+Optional Rust path overrides:
+
+- `--rust-convex-value-path` (default `crate::convex::ConvexValue`)
+- `--rust-api-client-module-path` (default `crate::convex`)
+- `--rust-api-types-module-path` (default `crate::generated::convex_types`)
+
 ## How It Works
 
 - Hull parses `schema.ts` and `validators.ts` using a Rust TypeScript parser.

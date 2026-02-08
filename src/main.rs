@@ -13,6 +13,12 @@ struct Args {
     rust_out: PathBuf,
     #[arg(long)]
     rust_api_out: PathBuf,
+    #[arg(long, default_value = "crate::convex::ConvexValue")]
+    rust_convex_value_path: String,
+    #[arg(long, default_value = "crate::convex")]
+    rust_api_client_module_path: String,
+    #[arg(long, default_value = "crate::generated::convex_types")]
+    rust_api_types_module_path: String,
 }
 
 fn main() -> Result<()> {
@@ -22,5 +28,8 @@ fn main() -> Result<()> {
         swift_out: args.swift_out,
         rust_out: args.rust_out,
         rust_api_out: args.rust_api_out,
+        rust_convex_value_path: args.rust_convex_value_path,
+        rust_api_client_module_path: args.rust_api_client_module_path,
+        rust_api_types_module_path: args.rust_api_types_module_path,
     })
 }
