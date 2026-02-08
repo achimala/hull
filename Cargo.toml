@@ -6,6 +6,7 @@ description = "Generate strongly typed Swift and Rust code from a Convex schema 
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["convex", "codegen", "typescript", "swift", "rust"]
+repository = "https://github.com/achimala/hull"
 
 [dependencies]
 anyhow = "1"
