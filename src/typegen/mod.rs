@@ -338,15 +338,16 @@ impl ModuleEnv {
 
         for item in &module.body {
             match item {
-                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl { decl, .. })) => {
-                    if let Decl::Var(var_decl) = decl {
-                        for decl in &var_decl.decls {
-                            if let Pat::Ident(ident) = &decl.name {
-                                if let Some(init) = &decl.init {
-                                    decls.insert(ident.sym.to_string(), *init.clone());
-                                    if matches!(&**init, Expr::Object(_)) {
-                                        object_literals.insert(ident.sym.to_string());
-                                    }
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
+                    decl: Decl::Var(var_decl),
+                    ..
+                })) => {
+                    for decl in &var_decl.decls {
+                        if let Pat::Ident(ident) = &decl.name {
+                            if let Some(init) = &decl.init {
+                                decls.insert(ident.sym.to_string(), *init.clone());
+                                if matches!(&**init, Expr::Object(_)) {
+                                    object_literals.insert(ident.sym.to_string());
                                 }
                             }
                         }
@@ -423,7 +424,7 @@ impl Evaluator {
 
         let schema_arg = call
             .args
-            .get(0)
+            .first()
             .ok_or_else(|| anyhow!("schema.ts: defineSchema missing argument"))?;
 
         let schema_obj = match &*schema_arg.expr {
@@ -457,7 +458,7 @@ impl Evaluator {
     fn eval_expr(&mut self, expr: &Expr) -> Result<TypeExpr> {
         match expr {
             Expr::Call(call) => self.eval_call(call),
-            Expr::Ident(ident) => self.eval_ident(&ident.sym.to_string()),
+            Expr::Ident(ident) => self.eval_ident(ident.sym.as_ref()),
             Expr::Object(obj) => {
                 let fields = self.eval_object_fields(obj)?;
                 Ok(TypeExpr::Object(fields))
@@ -514,7 +515,7 @@ impl Evaluator {
             "literal" => {
                 let arg = call
                     .args
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("v.literal missing arg"))?;
                 match &*arg.expr {
                     Expr::Lit(Lit::Str(s)) => Ok(TypeExpr::LiteralString(
@@ -527,7 +528,7 @@ impl Evaluator {
             "id" => {
                 let arg = call
                     .args
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("v.id missing arg"))?;
                 match &*arg.expr {
                     Expr::Lit(Lit::Str(s)) => {
@@ -539,7 +540,7 @@ impl Evaluator {
             "object" => {
                 let arg = call
                     .args
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("v.object missing arg"))?;
                 let obj = match &*arg.expr {
                     Expr::Object(obj) => obj,
@@ -551,7 +552,7 @@ impl Evaluator {
             "array" => {
                 let arg = call
                     .args
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("v.array missing arg"))?;
                 let inner = self.eval_expr(&arg.expr)?;
                 Ok(TypeExpr::Array(Box::new(inner)))
@@ -559,7 +560,7 @@ impl Evaluator {
             "record" => {
                 let key_arg = call
                     .args
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("v.record missing key"))?;
                 let val_arg = call
                     .args
@@ -598,7 +599,7 @@ impl Evaluator {
             "optional" => {
                 let arg = call
                     .args
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("v.optional missing arg"))?;
                 let inner = self.eval_expr(&arg.expr)?;
                 Ok(TypeExpr::Optional(Box::new(inner)))
@@ -726,10 +727,7 @@ impl Evaluator {
 }
 
 fn is_validator_expr(expr: &Expr) -> bool {
-    match expr {
-        Expr::Call(_) | Expr::Object(_) | Expr::Ident(_) => true,
-        _ => false,
-    }
+    matches!(expr, Expr::Call(_) | Expr::Object(_) | Expr::Ident(_))
 }
 
 fn extract_function_args(
@@ -1040,8 +1038,8 @@ fn function_kind(call: &CallExpr) -> Option<ConvexFunctionKind> {
     }
 }
 
-fn extract_args_expr<'a>(call: &'a CallExpr) -> Result<Option<&'a Expr>> {
-    let Some(arg) = call.args.get(0) else {
+fn extract_args_expr(call: &CallExpr) -> Result<Option<&Expr>> {
+    let Some(arg) = call.args.first() else {
         return Ok(None);
     };
     let obj = match &*arg.expr {
@@ -1067,7 +1065,7 @@ fn extract_define_table_arg(expr: &Expr) -> Option<&Expr> {
         Expr::Call(call) => match &call.callee {
             Callee::Expr(callee_expr) => match &**callee_expr {
                 Expr::Ident(ident) if ident.sym == *"defineTable" => {
-                    return call.args.get(0).map(|arg| &*arg.expr);
+                    call.args.first().map(|arg| &*arg.expr)
                 }
                 Expr::Member(member) => extract_define_table_arg(&member.obj),
                 _ => None,
@@ -1340,12 +1338,10 @@ impl SwiftGenerator {
                 } else {
                     out.push_str(&format!("    let {}: {}\n", swift_name, ty));
                 }
+            } else if let Some(wrapper) = wrapper {
+                out.push_str(&format!("    @{} var {}: {}\n", wrapper, swift_name, ty));
             } else {
-                if let Some(wrapper) = wrapper {
-                    out.push_str(&format!("    @{} var {}: {}\n", wrapper, swift_name, ty));
-                } else {
-                    out.push_str(&format!("    let {}: {}\n", swift_name, ty));
-                }
+                out.push_str(&format!("    let {}: {}\n", swift_name, ty));
             }
             if rename.is_some() {
                 has_renames = true;
@@ -1422,7 +1418,7 @@ impl SwiftGenerator {
     fn union_variant_label(&self, parent: &str, member: &TypeExpr, index: usize) -> String {
         let resolved = self.resolve_named_expr(member);
         match resolved {
-            TypeExpr::Named(name) => pascal_case(&name),
+            TypeExpr::Named(name) => pascal_case(name),
             TypeExpr::String => "String".to_string(),
             TypeExpr::Number => "Number".to_string(),
             TypeExpr::Int64 => "Int64".to_string(),
@@ -1440,7 +1436,7 @@ impl SwiftGenerator {
                     }
                 }
                 match inner_resolved {
-                    TypeExpr::Named(name) => format!("{}List", pascal_case(&name)),
+                    TypeExpr::Named(name) => format!("{}List", pascal_case(name)),
                     _ => "Array".to_string(),
                 }
             }
@@ -1684,23 +1680,21 @@ impl SwiftGenerator {
                             field_name, swift_name
                         ));
                     }
+                } else if is_array {
+                    out.push_str(&format!(
+                        "        args[\"{}\"] = {}.map {{ $0 as ConvexEncodable? }}\n",
+                        field_name, swift_name
+                    ));
+                } else if is_record {
+                    out.push_str(&format!(
+                        "        args[\"{}\"] = {}.mapValues {{ $0 as ConvexEncodable? }}\n",
+                        field_name, swift_name
+                    ));
                 } else {
-                    if is_array {
-                        out.push_str(&format!(
-                            "        args[\"{}\"] = {}.map {{ $0 as ConvexEncodable? }}\n",
-                            field_name, swift_name
-                        ));
-                    } else if is_record {
-                        out.push_str(&format!(
-                            "        args[\"{}\"] = {}.mapValues {{ $0 as ConvexEncodable? }}\n",
-                            field_name, swift_name
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "        args[\"{}\"] = {}\n",
-                            field_name, swift_name
-                        ));
-                    }
+                    out.push_str(&format!(
+                        "        args[\"{}\"] = {}\n",
+                        field_name, swift_name
+                    ));
                 }
             }
             out.push_str("        return args\n");
@@ -2155,9 +2149,7 @@ impl SwiftGenerator {
                     discriminator = Some(key);
                     break;
                 }
-                if key == "role" {
-                    discriminator = Some(key);
-                } else if discriminator.is_none() {
+                if key == "role" || discriminator.is_none() {
                     discriminator = Some(key);
                 }
             }
@@ -2684,7 +2676,7 @@ impl RustGenerator {
         } else {
             validate_impl.push_str("        for key in object.keys() {\n");
             validate_impl.push_str("            match key.as_str() {\n");
-            for (field_name, _) in fields {
+            for field_name in fields.keys() {
                 validate_impl.push_str(&format!("                \"{}\" => {{}}\n", field_name));
             }
             validate_impl.push_str(
@@ -2771,7 +2763,7 @@ impl RustGenerator {
         out.push_str("#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]\n");
         out.push_str(&format!("pub enum {} {{\n", name));
         for literal in &cases {
-            let variant = rust_variant_name(&literal);
+            let variant = rust_variant_name(literal);
             out.push_str(&format!("    #[serde(rename = \"{}\")]\n", literal));
             out.push_str(&format!("    {},\n", variant));
         }
@@ -2986,7 +2978,7 @@ impl RustGenerator {
                 "                        \"{}\" => {{}}\n",
                 disc_key
             ));
-            for (field_name, _) in &fields {
+            for field_name in fields.keys() {
                 validate_impl.push_str(&format!(
                     "                        \"{}\" => {{}}\n",
                     field_name
@@ -3297,7 +3289,7 @@ impl RustGenerator {
     fn union_variant_label(&self, parent: &str, member: &TypeExpr, index: usize) -> String {
         let resolved = self.resolve_named_expr(member);
         match resolved {
-            TypeExpr::Named(name) => pascal_case(&name),
+            TypeExpr::Named(name) => pascal_case(name),
             TypeExpr::String => "String".to_string(),
             TypeExpr::Number => "Number".to_string(),
             TypeExpr::Int64 => "Int64".to_string(),
@@ -3315,7 +3307,7 @@ impl RustGenerator {
                     }
                 }
                 match inner_resolved {
-                    TypeExpr::Named(name) => format!("{}List", pascal_case(&name)),
+                    TypeExpr::Named(name) => format!("{}List", pascal_case(name)),
                     _ => "Array".to_string(),
                 }
             }

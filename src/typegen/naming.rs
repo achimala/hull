@@ -1,6 +1,6 @@
 pub(crate) fn table_type_name(table_name: &str) -> String {
-    let singular = if table_name.ends_with('s') {
-        &table_name[..table_name.len() - 1]
+    let singular = if let Some(stripped) = table_name.strip_suffix('s') {
+        stripped
     } else {
         table_name
     };
