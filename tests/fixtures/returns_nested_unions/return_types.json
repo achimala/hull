@@ -1,0 +1,91 @@
+{
+  "jobs:snapshot": {
+    "type": "object",
+    "fields": {
+      "job": {
+        "type": {
+          "type": "doc",
+          "table": "jobs"
+        },
+        "optional": false
+      },
+      "state": {
+        "type": {
+          "type": "union",
+          "members": [
+            {
+              "type": "literal_string",
+              "value": "queued"
+            },
+            {
+              "type": "literal_string",
+              "value": "running"
+            },
+            {
+              "type": "literal_string",
+              "value": "failed"
+            }
+          ]
+        },
+        "optional": false
+      },
+      "progress": {
+        "type": {
+          "type": "number"
+        },
+        "optional": true
+      }
+    }
+  },
+  "jobs:stream": {
+    "type": "union",
+    "members": [
+      {
+        "type": "object",
+        "fields": {
+          "kind": {
+            "type": {
+              "type": "literal_string",
+              "value": "update"
+            },
+            "optional": false
+          },
+          "payload": {
+            "type": {
+              "type": "object",
+              "fields": {
+                "items": {
+                  "type": {
+                    "type": "array",
+                    "items": {
+                      "type": "doc",
+                      "table": "jobs"
+                    }
+                  },
+                  "optional": false
+                },
+                "idsByOwner": {
+                  "type": {
+                    "type": "record",
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "id",
+                      "table": "jobs"
+                    }
+                  },
+                  "optional": false
+                }
+              }
+            },
+            "optional": false
+          }
+        }
+      },
+      {
+        "type": "null"
+      }
+    ]
+  }
+}

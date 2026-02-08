@@ -1,0 +1,19 @@
+{
+  "admin/users:list": {
+    "type": "array",
+    "items": {
+      "type": "doc",
+      "table": "users"
+    }
+  },
+  "public/users:list": {
+    "type": "record",
+    "key": {
+      "type": "string"
+    },
+    "value": {
+      "type": "id",
+      "table": "users"
+    }
+  }
+}

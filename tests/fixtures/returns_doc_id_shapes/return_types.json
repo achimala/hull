@@ -1,0 +1,25 @@
+{
+  "posts:getById": {
+    "type": "union",
+    "members": [
+      {
+        "type": "doc",
+        "table": "posts"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  },
+  "posts:listByAuthor": {
+    "type": "array",
+    "items": {
+      "type": "doc",
+      "table": "posts"
+    }
+  },
+  "posts:create": {
+    "type": "id",
+    "table": "posts"
+  }
+}
