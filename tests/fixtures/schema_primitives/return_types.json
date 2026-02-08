@@ -1,0 +1,25 @@
+{
+  "things:list": {
+    "type": "array",
+    "items": {
+      "type": "doc",
+      "table": "things"
+    }
+  },
+  "things:create": {
+    "type": "id",
+    "table": "things"
+  },
+  "things:inspect": {
+    "type": "union",
+    "members": [
+      {
+        "type": "doc",
+        "table": "things"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  }
+}

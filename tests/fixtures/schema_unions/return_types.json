@@ -1,0 +1,18 @@
+{
+  "events:latest": {
+    "type": "union",
+    "members": [
+      {
+        "type": "doc",
+        "table": "events"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  },
+  "events:publish": {
+    "type": "id",
+    "table": "events"
+  }
+}

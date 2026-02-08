@@ -1,0 +1,18 @@
+{
+  "users:byEmail": {
+    "type": "union",
+    "members": [
+      {
+        "type": "doc",
+        "table": "users"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  },
+  "users:create": {
+    "type": "id",
+    "table": "users"
+  }
+}

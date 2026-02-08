@@ -1,0 +1,18 @@
+{
+  "accounts:byHandle": {
+    "type": "union",
+    "members": [
+      {
+        "type": "doc",
+        "table": "accounts"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  },
+  "accounts:disable": {
+    "type": "id",
+    "table": "accounts"
+  }
+}

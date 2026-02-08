@@ -1,0 +1,18 @@
+{
+  "statusLogs:get": {
+    "type": "union",
+    "members": [
+      {
+        "type": "doc",
+        "table": "status_logs"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  },
+  "statusLogs:put": {
+    "type": "id",
+    "table": "status_logs"
+  }
+}
