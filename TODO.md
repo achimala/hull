@@ -94,11 +94,14 @@ This document is a practical cleanup and launch checklist for this repository.
   - reserved words in field names.
   - internal and public queries, mutations, and actions.
   - unsupported patterns with expected clear error messages.
-- [ ] Add fixtures for return type extraction behavior.
+- [x] Add fixtures for Convex schema features and edge cases.
+  - Status: covered by `schema_primitives`, `schema_spreads`, `schema_unions`, `schema_keywords`, and `schema_table_chains`.
+- [x] Add fixtures for return type extraction behavior.
   - Promise and async handlers.
   - document and id return shapes.
   - nested object and union return types.
   - multiple files and nested directories.
+  - Status: covered by `returns_doc_id_shapes`, `returns_nested_unions`, and `returns_nested_modules`.
 
 ## Priority 4: Documentation For Users And Contributors
 
