@@ -9,6 +9,9 @@ use swc_common::{FileName, SourceMap};
 use swc_ecma_ast::*;
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub struct TypegenConfig {
     pub convex_dir: PathBuf,
@@ -18,6 +21,13 @@ pub struct TypegenConfig {
 }
 
 pub fn run(config: TypegenConfig) -> Result<()> {
+    run_with_return_type_extractor(config, extract_function_return_types)
+}
+
+fn run_with_return_type_extractor<F>(config: TypegenConfig, extract_return_types: F) -> Result<()>
+where
+    F: Fn(&Path, &HashMap<String, String>) -> Result<HashMap<String, TypeExpr>>,
+{
     let validators_path = config.convex_dir.join("validators.ts");
     let schema_path = config.convex_dir.join("schema.ts");
 
@@ -116,7 +126,7 @@ pub fn run(config: TypegenConfig) -> Result<()> {
         }
     }
 
-    let function_return_types = extract_function_return_types(&config.convex_dir, &table_key_map)?;
+    let function_return_types = extract_return_types(&config.convex_dir, &table_key_map)?;
     let convex_function_defs =
         build_function_defs(function_args, function_return_types, &mut named_types)?;
 
@@ -683,36 +693,19 @@ fn extract_function_args(
     evaluator: &mut Evaluator,
     convex_dir: &Path,
 ) -> Result<Vec<FunctionArgDef>> {
+    let mut files = Vec::new();
+    collect_typescript_files(convex_dir, &mut files)?;
+    files.sort();
+
     let mut out = Vec::new();
-    for entry in fs::read_dir(convex_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
+    for path in files {
+        let module_name = module_name_from_path(convex_dir, &path)?;
+        if matches!(
+            module_name.as_str(),
+            "schema" | "validators" | "auth.config"
+        ) {
             continue;
         }
-        if path.extension().and_then(|ext| ext.to_str()) != Some("ts") {
-            continue;
-        }
-        if path.file_name().and_then(|name| name.to_str()) == Some("schema.ts") {
-            continue;
-        }
-        if path.file_name().and_then(|name| name.to_str()) == Some("validators.ts") {
-            continue;
-        }
-        if path.file_name().and_then(|name| name.to_str()) == Some("tsconfig.json") {
-            continue;
-        }
-        if path
-            .components()
-            .any(|component| component.as_os_str() == "_generated")
-        {
-            continue;
-        }
-        let module_name = path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow!("Invalid module filename: {:?}", path))?
-            .to_string();
         let module = parse_ts_module(&path)?;
         let args = evaluator.extract_function_args_from_module(&module)?;
         for (name, kind, ty) in args {
@@ -725,6 +718,44 @@ fn extract_function_args(
         }
     }
     Ok(out)
+}
+
+fn collect_typescript_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().and_then(|name| name.to_str()) == Some("_generated") {
+                continue;
+            }
+            collect_typescript_files(&path, out)?;
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) != Some("ts") {
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".d.ts"))
+        {
+            continue;
+        }
+        out.push(path);
+    }
+    Ok(())
+}
+
+fn module_name_from_path(convex_dir: &Path, path: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(convex_dir)
+        .map_err(|_| anyhow!("Failed to strip convex dir prefix from {:?}", path))?;
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    relative
+        .strip_suffix(".ts")
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow!("Invalid TypeScript module path: {:?}", path))
 }
 
 #[derive(Clone, Debug)]
@@ -785,16 +816,20 @@ fn extract_function_return_types(
     convex_dir: &Path,
     table_key_map: &HashMap<String, String>,
 ) -> Result<HashMap<String, TypeExpr>> {
-    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join("extract_convex_function_return_types.mjs");
-
     let output = Command::new("node")
-        .arg(script_path)
+        .arg("--input-type=module")
+        .arg("--eval")
+        .arg(include_str!("extract_convex_function_return_types.mjs"))
+        .arg("--")
         .arg("--convex-dir")
         .arg(convex_dir)
         .output()
-        .context("failed to run node to extract convex return types")?;
+        .with_context(|| {
+            format!(
+                "failed to run node for Convex return type extraction. Make sure Node.js 20+ is installed and available on PATH (convex dir: {:?})",
+                convex_dir
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1022,7 +1057,7 @@ fn member_prop_name(prop: &MemberProp) -> Result<String> {
 
 fn generate_rust_api(defs: &[RustFunctionDef]) -> Result<String> {
     let mut out = String::new();
-    out.push_str("// This file is @generated by convex_typegen. DO NOT EDIT.\n");
+    out.push_str("// This file is @generated by hull. DO NOT EDIT.\n");
     out.push_str("#![allow(clippy::disallowed_methods)]\n");
     out.push_str("use crate::convex::{ConvexClient, ConvexError};\n");
     out.push_str("use crate::generated::convex_types::*;\n\n");
@@ -1154,7 +1189,7 @@ fn split_words(name: &str) -> Vec<String> {
 
     let mut chars = name.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '_' || ch == '-' {
+        if ch == '_' || ch == '-' || ch == '/' || ch == '.' || ch == ':' {
             push_current(&mut out, &mut current);
             continue;
         }
@@ -1303,7 +1338,7 @@ impl SwiftGenerator {
         let api = self.emit_api()?;
         let mut types_out = String::new();
         types_out.push_str("// swift-format-ignore-file\n");
-        types_out.push_str("// This file is @generated by convex_typegen. DO NOT EDIT.\n");
+        types_out.push_str("// This file is @generated by hull. DO NOT EDIT.\n");
         types_out.push_str("import Foundation\n");
         types_out.push_str("@preconcurrency import ConvexMobile\n\n");
         for def in &self.defs {
@@ -1325,7 +1360,7 @@ impl SwiftGenerator {
     fn emit_support(&self) -> String {
         let mut out = String::new();
         out.push_str("// swift-format-ignore-file\n");
-        out.push_str("// This file is @generated by convex_typegen. DO NOT EDIT.\n");
+        out.push_str("// This file is @generated by hull. DO NOT EDIT.\n");
         out.push_str("import Foundation\n");
         out.push_str("@preconcurrency import ConvexMobile\n\n");
         out.push_str("protocol ConvexCodable: Codable, ConvexEncodable {}\n\n");
@@ -1839,7 +1874,7 @@ impl SwiftGenerator {
 
         let mut out = String::new();
         out.push_str("// swift-format-ignore-file\n");
-        out.push_str("// This file is @generated by convex_typegen. DO NOT EDIT.\n");
+        out.push_str("// This file is @generated by hull. DO NOT EDIT.\n");
         out.push_str("import Foundation\n");
         out.push_str("@preconcurrency import ConvexMobile\n\n");
 
@@ -2380,7 +2415,7 @@ impl RustGenerator {
         self.emit_args_impls();
 
         let mut out = String::new();
-        out.push_str("// This file is @generated by convex_typegen. DO NOT EDIT.\n");
+        out.push_str("// This file is @generated by hull. DO NOT EDIT.\n");
         out.push_str("#![allow(non_snake_case)]\n");
         out.push_str("#![allow(clippy::disallowed_types)]\n");
         out.push_str("use serde::{Deserialize, Serialize};\n");

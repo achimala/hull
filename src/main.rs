@@ -1,25 +1,26 @@
 use anyhow::Result;
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "convex_typegen")]
+#[command(name = "hull")]
 struct Args {
-    #[arg(long, default_value = "../../convex/convex")]
-    convex_dir: String,
-    #[arg(long, default_value = "../../../Kasana/Kasana/Generated/Convex")]
-    swift_out: String,
-    #[arg(long, default_value = "../../src/generated/convex_types.rs")]
-    rust_out: String,
-    #[arg(long, default_value = "../../src/generated/convex_api.rs")]
-    rust_api_out: String,
+    #[arg(long)]
+    convex_dir: PathBuf,
+    #[arg(long)]
+    swift_out: PathBuf,
+    #[arg(long)]
+    rust_out: PathBuf,
+    #[arg(long)]
+    rust_api_out: PathBuf,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    convex_swift_typegen::typegen::run(convex_swift_typegen::typegen::TypegenConfig {
-        convex_dir: args.convex_dir.into(),
-        swift_out: args.swift_out.into(),
-        rust_out: args.rust_out.into(),
-        rust_api_out: args.rust_api_out.into(),
+    hull::typegen::run(hull::typegen::TypegenConfig {
+        convex_dir: args.convex_dir,
+        swift_out: args.swift_out,
+        rust_out: args.rust_out,
+        rust_api_out: args.rust_api_out,
     })
 }

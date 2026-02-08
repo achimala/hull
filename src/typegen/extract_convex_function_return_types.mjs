@@ -5,7 +5,7 @@ import fs from "node:fs";
 
 function parseArgs(argv) {
   const out = new Map();
-  for (let i = 2; i < argv.length; i += 1) {
+  for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
     if (!arg.startsWith("--")) {
       continue;
@@ -270,8 +270,12 @@ async function main() {
       continue;
     }
     if (!filename.endsWith(".ts")) continue;
+    if (filename.endsWith(".d.ts")) continue;
 
-    const moduleName = path.basename(filename, ".ts");
+    const moduleName = path
+      .relative(convexDir, filename)
+      .replace(/\\/g, "/")
+      .replace(/\.ts$/, "");
     if (moduleName === "schema" || moduleName === "validators" || moduleName === "auth.config") {
       continue;
     }

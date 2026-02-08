@@ -1,7 +1,11 @@
 [package]
-name = "convex_swift_typegen"
+name = "hull"
 version = "0.1.0"
 edition = "2021"
+description = "Generate strongly typed Swift and Rust code from a Convex schema and functions."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["convex", "codegen", "typescript", "swift", "rust"]
 
 [dependencies]
 anyhow = "1"
