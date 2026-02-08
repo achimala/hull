@@ -1,0 +1,25 @@
+{
+  "messages:list": {
+    "type": "array",
+    "items": {
+      "type": "doc",
+      "table": "messages"
+    }
+  },
+  "messages:create": {
+    "type": "id",
+    "table": "messages"
+  },
+  "admin/users:getById": {
+    "type": "union",
+    "members": [
+      {
+        "type": "doc",
+        "table": "users"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  }
+}
