@@ -1,0 +1,14 @@
+[package]
+name = "convex_swift_typegen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+indexmap = "2"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+swc_common = "18.0.1"
+swc_ecma_ast = "19.0.0"
+swc_ecma_parser = "32.0.0"
