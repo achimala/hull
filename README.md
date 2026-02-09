@@ -15,7 +15,7 @@ The goal is to define schema and function types once in your Convex project, the
 - Node.js 20 or newer
 - A Convex project with:
   - `schema.ts`
-  - `validators.ts`
+  - optional `validators.ts`
   - function modules (`query`, `mutation`, `action`)
 - TypeScript available from your Convex project root (`typescript` package)
 
@@ -45,9 +45,15 @@ Optional Rust path overrides:
 - `--rust-api-client-module-path` (default `crate::convex`)
 - `--rust-api-types-module-path` (default `crate::generated::convex_types`)
 
+Optional behavior:
+
+- `--include-internal-functions` includes Convex internal functions in generated Swift API wrappers.
+  - By default internal functions are excluded from Swift API output.
+  - Rust API output still includes internal functions.
+
 ## How It Works
 
-- Hull parses `schema.ts` and `validators.ts` using a Rust TypeScript parser.
+- Hull parses `schema.ts` and optional `validators.ts` using a Rust TypeScript parser.
 - Hull extracts function argument validators from exported Convex functions.
 - Hull extracts function return types using the TypeScript checker through Node.js.
 - Hull generates target language code from that combined type model.

@@ -66,6 +66,7 @@ fn run_fixture_case(case_dir: &Path, update: bool) -> Result<()> {
         rust_convex_value_path: "crate::convex::ConvexValue".to_string(),
         rust_api_client_module_path: "crate::convex".to_string(),
         rust_api_types_module_path: "crate::generated::convex_types".to_string(),
+        include_internal_functions: false,
     };
 
     run_with_return_type_extractor(config, |_, table_key_map| {

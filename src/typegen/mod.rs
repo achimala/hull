@@ -27,6 +27,7 @@ pub struct TypegenConfig {
     pub rust_convex_value_path: String,
     pub rust_api_client_module_path: String,
     pub rust_api_types_module_path: String,
+    pub include_internal_functions: bool,
 }
 
 pub fn run(config: TypegenConfig) -> Result<()> {
@@ -65,10 +66,13 @@ where
     let validators_path = config.convex_dir.join("validators.ts");
     let schema_path = config.convex_dir.join("schema.ts");
 
-    let validators_module = parse_ts_module(&validators_path)?;
+    let validators_module = parse_optional_ts_module(&validators_path)?;
     let schema_module = parse_ts_module(&schema_path)?;
 
-    let validators_env = ModuleEnv::from_module(&validators_module, &validators_path)?;
+    let validators_env = match validators_module {
+        Some(module) => ModuleEnv::from_module(&module, &validators_path)?,
+        None => ModuleEnv::empty(),
+    };
     let schema_env = ModuleEnv::from_module(&schema_module, &schema_path)?;
 
     let mut evaluator = Evaluator::new(validators_env, schema_env);
@@ -167,6 +171,7 @@ where
     let rust_name_map = name_map.clone();
     let swift_function_defs = convex_function_defs
         .iter()
+        .filter(|def| config.include_internal_functions || !def.is_internal)
         .map(|def| SwiftFunctionDef {
             module: def.module.clone(),
             name: def.name.clone(),
@@ -263,6 +268,13 @@ fn parse_ts_module(path: &Path) -> Result<Module> {
         .map_err(|err| anyhow!("TS parse error in {:?}: {:?}", path, err))
 }
 
+fn parse_optional_ts_module(path: &Path) -> Result<Option<Module>> {
+    if path.is_file() {
+        return Ok(Some(parse_ts_module(path)?));
+    }
+    Ok(None)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum TypeExpr {
     Named(String),
@@ -309,6 +321,7 @@ struct FunctionArgDef {
     module: String,
     name: String,
     kind: ConvexFunctionKind,
+    is_internal: bool,
     ty: TypeExpr,
 }
 
@@ -332,6 +345,26 @@ struct ModuleEnv {
 }
 
 impl ModuleEnv {
+    fn empty() -> Self {
+        Self {
+            decls: HashMap::new(),
+            object_literals: HashSet::new(),
+        }
+    }
+
+    fn merge(&self, other: &Self) -> Self {
+        let mut decls = self.decls.clone();
+        decls.extend(other.decls.clone());
+
+        let mut object_literals = self.object_literals.clone();
+        object_literals.extend(other.object_literals.iter().cloned());
+
+        Self {
+            decls,
+            object_literals,
+        }
+    }
+
     fn from_module(module: &Module, _path: &Path) -> Result<Self> {
         let mut decls = HashMap::new();
         let mut object_literals = HashSet::new();
@@ -626,30 +659,13 @@ impl Evaluator {
                 PropOrSpread::Prop(prop) => match &**prop {
                     Prop::KeyValue(kv) => {
                         let key = prop_name(&kv.key)?;
-                        let mut ty = self.eval_expr(&kv.value)?;
-                        let mut optional = false;
-                        let mut nullable = false;
-                        loop {
-                            match ty {
-                                TypeExpr::Optional(inner) => {
-                                    ty = *inner;
-                                    optional = true;
-                                }
-                                TypeExpr::Nullable(inner) => {
-                                    ty = *inner;
-                                    nullable = true;
-                                }
-                                _ => break,
-                            }
-                        }
-                        fields.insert(
-                            key,
-                            Field {
-                                ty,
-                                optional,
-                                nullable,
-                            },
-                        );
+                        let ty = self.eval_expr(&kv.value)?;
+                        fields.insert(key, normalize_field_type(ty));
+                    }
+                    Prop::Shorthand(ident) => {
+                        let key = ident.sym.to_string();
+                        let ty = self.eval_ident(&key)?;
+                        fields.insert(key, normalize_field_type(ty));
                     }
                     _ => return Err(anyhow!("Unsupported object property")),
                 },
@@ -687,9 +703,12 @@ impl Evaluator {
     }
 
     fn extract_function_args_from_module(
-        &mut self,
+        &self,
         module: &Module,
-    ) -> Result<Vec<(String, ConvexFunctionKind, TypeExpr)>> {
+    ) -> Result<Vec<(String, ConvexFunctionKind, bool, TypeExpr)>> {
+        let module_env = ModuleEnv::from_module(module, Path::new("<module>"))?;
+        let combined_validators_env = self.validators_env.merge(&module_env);
+        let mut module_evaluator = Evaluator::new(combined_validators_env, self.schema_env.clone());
         let mut out = Vec::new();
 
         for item in &module.body {
@@ -710,19 +729,130 @@ impl Evaluator {
                 let Expr::Call(call) = &**init else {
                     continue;
                 };
-                let Some(kind) = function_kind(call) else {
+                let Some(kind_info) = function_kind(call) else {
                     continue;
                 };
                 let args_expr = extract_args_expr(call)?;
                 let ty = match args_expr {
-                    Some(expr) => self.eval_expr(expr)?,
+                    Some(expr) => module_evaluator.eval_expr(expr)?,
                     None => TypeExpr::Object(BTreeMap::new()),
                 };
-                out.push((ident.sym.to_string(), kind, ty));
+                let ty = inline_module_named_types(ty, &module_env, &mut module_evaluator)?;
+                out.push((
+                    ident.sym.to_string(),
+                    kind_info.kind,
+                    kind_info.is_internal,
+                    ty,
+                ));
             }
         }
 
         Ok(out)
+    }
+}
+
+fn normalize_field_type(mut ty: TypeExpr) -> Field {
+    let mut optional = false;
+    let mut nullable = false;
+
+    loop {
+        match ty {
+            TypeExpr::Optional(inner) => {
+                ty = *inner;
+                optional = true;
+            }
+            TypeExpr::Nullable(inner) => {
+                ty = *inner;
+                nullable = true;
+            }
+            _ => break,
+        }
+    }
+
+    Field {
+        ty,
+        optional,
+        nullable,
+    }
+}
+
+fn inline_module_named_types(
+    ty: TypeExpr,
+    module_env: &ModuleEnv,
+    evaluator: &mut Evaluator,
+) -> Result<TypeExpr> {
+    let mut visiting = HashSet::new();
+    inline_module_named_types_inner(ty, module_env, evaluator, &mut visiting)
+}
+
+fn inline_module_named_types_inner(
+    ty: TypeExpr,
+    module_env: &ModuleEnv,
+    evaluator: &mut Evaluator,
+    visiting: &mut HashSet<String>,
+) -> Result<TypeExpr> {
+    match ty {
+        TypeExpr::Named(name) => {
+            if !module_env.decls.contains_key(&name) {
+                return Ok(TypeExpr::Named(name));
+            }
+            if !visiting.insert(name.clone()) {
+                return Err(anyhow!("recursive local validator identifier: {}", name));
+            }
+
+            let expr = module_env
+                .decls
+                .get(&name)
+                .ok_or_else(|| anyhow!("unknown local validator identifier: {}", name))?;
+            let resolved = evaluator.eval_expr(expr)?;
+            let inlined =
+                inline_module_named_types_inner(resolved, module_env, evaluator, visiting)?;
+            visiting.remove(&name);
+            Ok(inlined)
+        }
+        TypeExpr::Object(fields) => {
+            let mut out = BTreeMap::new();
+            for (name, field) in fields {
+                let inlined =
+                    inline_module_named_types_inner(field.ty, module_env, evaluator, visiting)?;
+                out.insert(
+                    name,
+                    Field {
+                        ty: inlined,
+                        optional: field.optional,
+                        nullable: field.nullable,
+                    },
+                );
+            }
+            Ok(TypeExpr::Object(out))
+        }
+        TypeExpr::Array(inner) => Ok(TypeExpr::Array(Box::new(inline_module_named_types_inner(
+            *inner, module_env, evaluator, visiting,
+        )?))),
+        TypeExpr::Record(key, value) => Ok(TypeExpr::Record(
+            Box::new(inline_module_named_types_inner(
+                *key, module_env, evaluator, visiting,
+            )?),
+            Box::new(inline_module_named_types_inner(
+                *value, module_env, evaluator, visiting,
+            )?),
+        )),
+        TypeExpr::Union(members) => {
+            let mut out = Vec::new();
+            for member in members {
+                out.push(inline_module_named_types_inner(
+                    member, module_env, evaluator, visiting,
+                )?);
+            }
+            Ok(TypeExpr::Union(out))
+        }
+        TypeExpr::Optional(inner) => Ok(TypeExpr::Optional(Box::new(
+            inline_module_named_types_inner(*inner, module_env, evaluator, visiting)?,
+        ))),
+        TypeExpr::Nullable(inner) => Ok(TypeExpr::Nullable(Box::new(
+            inline_module_named_types_inner(*inner, module_env, evaluator, visiting)?,
+        ))),
+        other => Ok(other),
     }
 }
 
@@ -749,11 +879,12 @@ fn extract_function_args(
         }
         let module = parse_ts_module(&path)?;
         let args = evaluator.extract_function_args_from_module(&module)?;
-        for (name, kind, ty) in args {
+        for (name, kind, is_internal, ty) in args {
             out.push(FunctionArgDef {
                 module: module_name.clone(),
                 name,
                 kind,
+                is_internal,
                 ty,
             });
         }
@@ -804,6 +935,7 @@ struct ConvexFunctionDef {
     module: String,
     name: String,
     kind: ConvexFunctionKind,
+    is_internal: bool,
     args_key: String,
     args_ty: TypeExpr,
     return_key: String,
@@ -1015,6 +1147,7 @@ fn build_function_defs(
             module: arg_def.module,
             name: arg_def.name,
             kind: arg_def.kind,
+            is_internal: arg_def.is_internal,
             args_key,
             args_ty: arg_def.ty,
             return_key,
@@ -1023,7 +1156,12 @@ fn build_function_defs(
     Ok(out)
 }
 
-fn function_kind(call: &CallExpr) -> Option<ConvexFunctionKind> {
+struct FunctionKindInfo {
+    kind: ConvexFunctionKind,
+    is_internal: bool,
+}
+
+fn function_kind(call: &CallExpr) -> Option<FunctionKindInfo> {
     let Callee::Expr(expr) = &call.callee else {
         return None;
     };
@@ -1031,9 +1169,30 @@ fn function_kind(call: &CallExpr) -> Option<ConvexFunctionKind> {
         return None;
     };
     match ident.sym.as_ref() {
-        "query" | "internalQuery" => Some(ConvexFunctionKind::Query),
-        "mutation" | "internalMutation" => Some(ConvexFunctionKind::Mutation),
-        "action" | "internalAction" => Some(ConvexFunctionKind::Action),
+        "query" => Some(FunctionKindInfo {
+            kind: ConvexFunctionKind::Query,
+            is_internal: false,
+        }),
+        "internalQuery" => Some(FunctionKindInfo {
+            kind: ConvexFunctionKind::Query,
+            is_internal: true,
+        }),
+        "mutation" => Some(FunctionKindInfo {
+            kind: ConvexFunctionKind::Mutation,
+            is_internal: false,
+        }),
+        "internalMutation" => Some(FunctionKindInfo {
+            kind: ConvexFunctionKind::Mutation,
+            is_internal: true,
+        }),
+        "action" => Some(FunctionKindInfo {
+            kind: ConvexFunctionKind::Action,
+            is_internal: false,
+        }),
+        "internalAction" => Some(FunctionKindInfo {
+            kind: ConvexFunctionKind::Action,
+            is_internal: true,
+        }),
         _ => None,
     }
 }

@@ -19,6 +19,8 @@ struct Args {
     rust_api_client_module_path: String,
     #[arg(long, default_value = "crate::generated::convex_types")]
     rust_api_types_module_path: String,
+    #[arg(long, default_value_t = false)]
+    include_internal_functions: bool,
 }
 
 fn main() -> Result<()> {
@@ -31,5 +33,6 @@ fn main() -> Result<()> {
         rust_convex_value_path: args.rust_convex_value_path,
         rust_api_client_module_path: args.rust_api_client_module_path,
         rust_api_types_module_path: args.rust_api_types_module_path,
+        include_internal_functions: args.include_internal_functions,
     })
 }

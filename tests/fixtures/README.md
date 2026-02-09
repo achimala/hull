@@ -6,7 +6,7 @@ Each fixture case should have this structure:
 tests/fixtures/<case>/
   convex/
     schema.ts
-    validators.ts
+    validators.ts (optional)
     ...function modules...
   return_types.json
   expected/

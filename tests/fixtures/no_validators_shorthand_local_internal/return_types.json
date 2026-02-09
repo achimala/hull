@@ -1,0 +1,15 @@
+{
+  "tasks:list": {
+    "type": "array",
+    "items": {
+      "type": "doc",
+      "table": "tasks"
+    }
+  },
+  "tasks:setStatus": {
+    "type": "null"
+  },
+  "tasks:applyStatusInternal": {
+    "type": "string"
+  }
+}
