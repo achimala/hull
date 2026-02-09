@@ -5,6 +5,7 @@ Hull is a compiler that reads a Convex schema and Convex function definitions, t
 Right now Hull generates:
 
 - Swift types and API wrappers
+- Swift HTTP route helpers from `http.ts` for `httpAction` handlers
 - Rust types and API wrappers
 
 The goal is to define schema and function types once in your Convex project, then generate code for each target language without drift.
@@ -16,7 +17,8 @@ The goal is to define schema and function types once in your Convex project, the
 - A Convex project with:
   - `schema.ts`
   - optional `validators.ts`
-  - function modules (`query`, `mutation`, `action`)
+  - function modules (`query`, `mutation`, `action`, `httpAction`)
+  - optional `http.ts` routes for generated HTTP route helpers
 - TypeScript available from your Convex project root (`typescript` package)
 
 ## Quick Start

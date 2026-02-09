@@ -36,6 +36,7 @@ pub(super) fn generate_rust_api(
             ConvexFunctionKind::Query => queries.push((func_name, def)),
             ConvexFunctionKind::Mutation => mutations.push((func_name, def)),
             ConvexFunctionKind::Action => actions.push((func_name, def)),
+            ConvexFunctionKind::HttpAction => {}
         }
     }
 

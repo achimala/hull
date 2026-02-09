@@ -45,13 +45,19 @@ function isCallToConvexBuilder(ts, node) {
     case "internalMutation":
     case "action":
     case "internalAction":
+    case "httpAction":
       return callee.text;
     default:
       return null;
   }
 }
 
-function getHandlerFunction(ts, callExpr) {
+function getHandlerFunction(ts, callExpr, builderKind) {
+  if (builderKind === "httpAction") {
+    if (callExpr.arguments.length < 1) return null;
+    return callExpr.arguments[0];
+  }
+
   if (callExpr.arguments.length < 1) return null;
   const arg0 = callExpr.arguments[0];
   if (!ts.isObjectLiteralExpression(arg0)) return null;
@@ -290,7 +296,7 @@ async function main() {
         if (!decl.initializer) continue;
         const builderKind = isCallToConvexBuilder(ts, decl.initializer);
         if (!builderKind) continue;
-        const handlerExpr = getHandlerFunction(ts, decl.initializer);
+        const handlerExpr = getHandlerFunction(ts, decl.initializer, builderKind);
         if (!handlerExpr) {
           throw new Error(`${moduleName}:${decl.name.text} missing handler`);
         }
@@ -309,7 +315,12 @@ async function main() {
 
         const key = `${moduleName}:${decl.name.text}`;
         try {
-          out[key] = serializeType(ts, checker, returnType, [], sf);
+          if (builderKind === "httpAction") {
+            // httpAction returns HTTP Response objects, not Convex JSON values.
+            out[key] = { type: "any" };
+          } else {
+            out[key] = serializeType(ts, checker, returnType, [], sf);
+          }
         } catch (err) {
           throw new Error(`${key}: ${String(err?.message ?? err)}`);
         }

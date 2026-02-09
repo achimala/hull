@@ -119,6 +119,7 @@ where
         .map(|name| (name.clone(), pascal_case(name)))
         .collect();
     let function_args = extract_function_args(&mut evaluator, &config.convex_dir)?;
+    let http_route_map = extract_http_routes(&config.convex_dir)?;
     for def in &function_args {
         let args_key = format!("args_{}_{}", def.module, def.name);
         let return_key = format!("return_{}_{}", def.module, def.name);
@@ -178,6 +179,9 @@ where
             kind: def.kind.clone(),
             args_key: def.args_key.clone(),
             args_ty: def.args_ty.clone(),
+            route: http_route_map
+                .get(&format!("{}:{}", def.module, def.name))
+                .cloned(),
         })
         .collect::<Vec<_>>();
 
@@ -314,6 +318,7 @@ enum ConvexFunctionKind {
     Query,
     Mutation,
     Action,
+    HttpAction,
 }
 
 #[derive(Clone, Debug)]
@@ -732,10 +737,14 @@ impl Evaluator {
                 let Some(kind_info) = function_kind(call) else {
                     continue;
                 };
-                let args_expr = extract_args_expr(call)?;
-                let ty = match args_expr {
-                    Some(expr) => module_evaluator.eval_expr(expr)?,
-                    None => TypeExpr::Object(BTreeMap::new()),
+                let ty = if kind_info.kind == ConvexFunctionKind::HttpAction {
+                    TypeExpr::Object(BTreeMap::new())
+                } else {
+                    let args_expr = extract_args_expr(call)?;
+                    match args_expr {
+                        Some(expr) => module_evaluator.eval_expr(expr)?,
+                        None => TypeExpr::Object(BTreeMap::new()),
+                    }
                 };
                 let ty = inline_module_named_types(ty, &module_env, &mut module_evaluator)?;
                 out.push((
@@ -930,6 +939,198 @@ fn module_name_from_path(convex_dir: &Path, path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow!("Invalid TypeScript module path: {:?}", path))
 }
 
+fn extract_http_routes(convex_dir: &Path) -> Result<HashMap<String, HttpRouteDef>> {
+    let http_path = convex_dir.join("http.ts");
+    if !http_path.is_file() {
+        return Ok(HashMap::new());
+    }
+
+    let http_module_name = module_name_from_path(convex_dir, &http_path)?;
+    let module = parse_ts_module(&http_path)?;
+    let mut import_map: HashMap<String, (String, String)> = HashMap::new();
+
+    for item in &module.body {
+        let ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) = item else {
+            continue;
+        };
+
+        let source = import_decl.src.value.to_string_lossy().into_owned();
+        if !source.starts_with('.') {
+            continue;
+        }
+        let imported_module_name =
+            resolve_typescript_import_module_name(convex_dir, &http_path, &source)?;
+
+        for specifier in &import_decl.specifiers {
+            let ImportSpecifier::Named(named) = specifier else {
+                continue;
+            };
+            let local_name = named.local.sym.to_string();
+            let imported_name = match &named.imported {
+                Some(ModuleExportName::Ident(ident)) => ident.sym.to_string(),
+                Some(ModuleExportName::Str(string)) => string.value.to_string_lossy().into_owned(),
+                None => local_name.clone(),
+            };
+            import_map.insert(local_name, (imported_module_name.clone(), imported_name));
+        }
+    }
+
+    let mut routes = HashMap::new();
+    for item in &module.body {
+        let ModuleItem::Stmt(Stmt::Expr(expr_stmt)) = item else {
+            continue;
+        };
+        let Expr::Call(call) = &*expr_stmt.expr else {
+            continue;
+        };
+        if !is_http_route_call(call) {
+            continue;
+        }
+
+        let route = parse_http_route_call(call)?;
+        let (handler_module, handler_name) =
+            if let Some((module_name, symbol_name)) = import_map.get(&route.handler) {
+                (module_name.clone(), symbol_name.clone())
+            } else {
+                (http_module_name.clone(), route.handler.clone())
+            };
+        let key = format!("{}:{}", handler_module, handler_name);
+        let route_def = HttpRouteDef {
+            method: route.method,
+            path: route.path,
+        };
+
+        if routes.insert(key.clone(), route_def).is_some() {
+            return Err(anyhow!(
+                "duplicate http.route handler mapping for key {} in {:?}",
+                key,
+                http_path
+            ));
+        }
+    }
+
+    Ok(routes)
+}
+
+fn resolve_typescript_import_module_name(
+    convex_dir: &Path,
+    importer_path: &Path,
+    import_path: &str,
+) -> Result<String> {
+    let importer_dir = importer_path
+        .parent()
+        .ok_or_else(|| anyhow!("importer path has no parent directory: {:?}", importer_path))?;
+    let unresolved = importer_dir.join(import_path);
+
+    let mut candidates = Vec::new();
+    if unresolved
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext == "ts")
+    {
+        candidates.push(unresolved.clone());
+    } else {
+        candidates.push(unresolved.with_extension("ts"));
+        candidates.push(unresolved.join("index.ts"));
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return module_name_from_path(convex_dir, &candidate);
+        }
+    }
+
+    Err(anyhow!(
+        "unsupported relative import path '{}' in {:?}; expected a local TypeScript module",
+        import_path,
+        importer_path
+    ))
+}
+
+fn is_http_route_call(call: &CallExpr) -> bool {
+    let Callee::Expr(expr) = &call.callee else {
+        return false;
+    };
+    let Expr::Member(member) = &**expr else {
+        return false;
+    };
+    let MemberProp::Ident(prop) = &member.prop else {
+        return false;
+    };
+
+    prop.sym.as_ref() == "route"
+}
+
+struct ParsedHttpRoute {
+    method: String,
+    path: String,
+    handler: String,
+}
+
+fn parse_http_route_call(call: &CallExpr) -> Result<ParsedHttpRoute> {
+    let Some(arg) = call.args.first() else {
+        return Err(anyhow!("http.route call is missing a route object"));
+    };
+    let Expr::Object(obj) = &*arg.expr else {
+        return Err(anyhow!("http.route call must use an object literal"));
+    };
+
+    let mut method = None;
+    let mut path = None;
+    let mut handler = None;
+
+    for prop in &obj.props {
+        let PropOrSpread::Prop(prop) = prop else {
+            continue;
+        };
+        let Prop::KeyValue(kv) = &**prop else {
+            continue;
+        };
+        let key = prop_name(&kv.key)?;
+
+        match key.as_str() {
+            "method" => {
+                method = Some(
+                    expr_string_literal(&kv.value)
+                        .ok_or_else(|| anyhow!("http.route method must be a string literal"))?,
+                );
+            }
+            "path" => {
+                path = Some(
+                    expr_string_literal(&kv.value)
+                        .ok_or_else(|| anyhow!("http.route path must be a string literal"))?,
+                );
+            }
+            "handler" => {
+                let Expr::Ident(ident) = &*kv.value else {
+                    return Err(anyhow!(
+                        "http.route handler must be an identifier bound in http.ts imports"
+                    ));
+                };
+                handler = Some(ident.sym.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    let method = method.ok_or_else(|| anyhow!("http.route call is missing method"))?;
+    let path = path.ok_or_else(|| anyhow!("http.route call is missing path"))?;
+    let handler = handler.ok_or_else(|| anyhow!("http.route call is missing handler"))?;
+
+    Ok(ParsedHttpRoute {
+        method,
+        path,
+        handler,
+    })
+}
+
+fn expr_string_literal(expr: &Expr) -> Option<String> {
+    let Expr::Lit(Lit::Str(string)) = expr else {
+        return None;
+    };
+    Some(string.value.to_string_lossy().into_owned())
+}
+
 #[derive(Clone, Debug)]
 struct ConvexFunctionDef {
     module: String,
@@ -939,6 +1140,12 @@ struct ConvexFunctionDef {
     args_key: String,
     args_ty: TypeExpr,
     return_key: String,
+}
+
+#[derive(Clone, Debug)]
+struct HttpRouteDef {
+    method: String,
+    path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1193,6 +1400,10 @@ fn function_kind(call: &CallExpr) -> Option<FunctionKindInfo> {
             kind: ConvexFunctionKind::Action,
             is_internal: true,
         }),
+        "httpAction" => Some(FunctionKindInfo {
+            kind: ConvexFunctionKind::HttpAction,
+            is_internal: false,
+        }),
         _ => None,
     }
 }
@@ -1268,6 +1479,7 @@ struct SwiftFunctionDef {
     kind: ConvexFunctionKind,
     args_key: String,
     args_ty: TypeExpr,
+    route: Option<HttpRouteDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -1866,6 +2078,10 @@ impl SwiftGenerator {
 
     fn emit_api(&mut self) -> Result<String> {
         self.emit_args_impls()?;
+        let has_http_routes = self
+            .function_defs
+            .iter()
+            .any(|def| def.kind == ConvexFunctionKind::HttpAction && def.route.is_some());
 
         let mut out = String::new();
         out.push_str("// swift-format-ignore-file\n");
@@ -1962,6 +2178,34 @@ impl SwiftGenerator {
         out.push_str("        }\n");
         out.push_str("    }\n");
         out.push_str("}\n\n");
+
+        if has_http_routes {
+            out.push_str("enum ConvexHTTPError: LocalizedError {\n");
+            out.push_str("    case invalidSiteURL(String)\n\n");
+            out.push_str("    var errorDescription: String? {\n");
+            out.push_str("        switch self {\n");
+            out.push_str("        case .invalidSiteURL(let value):\n");
+            out.push_str("            return \"Invalid site URL: \\(value)\"\n");
+            out.push_str("        }\n");
+            out.push_str("    }\n");
+            out.push_str("}\n\n");
+
+            out.push_str("fileprivate func convexHTTPRouteURL(siteURL: String, routePath: String) throws -> URL {\n");
+            out.push_str(
+                "    let trimmed = siteURL.trimmingCharacters(in: .whitespacesAndNewlines)\n",
+            );
+            out.push_str("    guard let base = URL(string: trimmed) else {\n");
+            out.push_str("        throw ConvexHTTPError.invalidSiteURL(trimmed)\n");
+            out.push_str("    }\n\n");
+            out.push_str("    var url = base\n");
+            out.push_str("    for part in routePath.split(separator: \"/\") {\n");
+            out.push_str("        let component = String(part)\n");
+            out.push_str("        guard !component.isEmpty else { continue }\n");
+            out.push_str("        url.appendPathComponent(component)\n");
+            out.push_str("    }\n\n");
+            out.push_str("    return url\n");
+            out.push_str("}\n\n");
+        }
 
         out.push_str("enum ConvexQueries {\n");
         for def in self.function_defs.clone() {
@@ -2061,6 +2305,67 @@ impl SwiftGenerator {
             )?;
         }
         out.push_str("}\n");
+
+        if has_http_routes {
+            out.push_str("\n");
+            out.push_str("enum ConvexHTTPActions {\n");
+            for def in self.function_defs.clone() {
+                if def.kind != ConvexFunctionKind::HttpAction {
+                    continue;
+                }
+                let Some(route) = def.route.clone() else {
+                    continue;
+                };
+
+                let func_name =
+                    swift_field_name(&lower_camel(&format!("{}_{}", def.module, def.name)));
+                out.push_str(&format!(
+                    "    static let {}Method: String = {:?}\n",
+                    func_name, route.method
+                ));
+                out.push_str(&format!(
+                    "    static let {}Path: String = {:?}\n\n",
+                    func_name, route.path
+                ));
+
+                out.push_str(&format!("    static func {}URL(\n", func_name));
+                out.push_str("        siteURL: String\n");
+                out.push_str("    ) throws -> URL {\n");
+                out.push_str(&format!(
+                    "        try convexHTTPRouteURL(siteURL: siteURL, routePath: {}Path)\n",
+                    func_name
+                ));
+                out.push_str("    }\n\n");
+
+                out.push_str(&format!("    static func {}Request(\n", func_name));
+                out.push_str("        siteURL: String,\n");
+                out.push_str("        accessToken: String? = nil,\n");
+                out.push_str("        body: Data? = nil,\n");
+                out.push_str("        contentType: String = \"application/json\"\n");
+                out.push_str("    ) throws -> URLRequest {\n");
+                out.push_str(&format!(
+                    "        let url = try {}URL(siteURL: siteURL)\n",
+                    func_name
+                ));
+                out.push_str("        var request = URLRequest(url: url)\n");
+                out.push_str(&format!(
+                    "        request.httpMethod = {}Method\n",
+                    func_name
+                ));
+                out.push_str("        if let token = accessToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {\n");
+                out.push_str("            request.setValue(\"Bearer \\(token)\", forHTTPHeaderField: \"Authorization\")\n");
+                out.push_str("        }\n");
+                out.push_str("        if let body {\n");
+                out.push_str("            request.httpBody = body\n");
+                out.push_str(
+                    "            request.setValue(contentType, forHTTPHeaderField: \"Content-Type\")\n",
+                );
+                out.push_str("        }\n");
+                out.push_str("        return request\n");
+                out.push_str("    }\n\n");
+            }
+            out.push_str("}\n");
+        }
 
         Ok(out)
     }
