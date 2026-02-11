@@ -46,26 +46,24 @@ fileprivate struct ConvexSubscriptionError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-fileprivate final class ConvexAsyncQuerySubscriber<T: Decodable>: QuerySubscriber {
-    private let decoder: JSONDecoder
-    private let continuation: AsyncThrowingStream<T, Error>.Continuation
+fileprivate final class ConvexAsyncQuerySubscriber: QuerySubscriber {
+    private let onErrorHandler: (String, String?) -> Void
+    private let onUpdateHandler: (String) -> Void
 
-    init(decoder: JSONDecoder, continuation: AsyncThrowingStream<T, Error>.Continuation) {
-        self.decoder = decoder
-        self.continuation = continuation
+    init(
+        onError: @escaping (String, String?) -> Void,
+        onUpdate: @escaping (String) -> Void
+    ) {
+        self.onErrorHandler = onError
+        self.onUpdateHandler = onUpdate
     }
 
     func onError(message: String, value: String?) {
-        continuation.finish(throwing: ConvexSubscriptionError(message: message, value: value))
+        onErrorHandler(message, value)
     }
 
     func onUpdate(value: String) {
-        do {
-            let decoded = try decoder.decode(T.self, from: Data(value.utf8))
-            continuation.yield(decoded)
-        } catch {
-            continuation.finish(throwing: error)
-        }
+        onUpdateHandler(value)
     }
 }
 
@@ -80,7 +78,20 @@ fileprivate func convexSubscribe<T: Decodable>(
         continuation.onTermination = { _ in
             Task { await state.terminate() }
         }
-        let subscriber = ConvexAsyncQuerySubscriber(decoder: JSONDecoder(), continuation: continuation)
+        let decoder = JSONDecoder()
+        let subscriber = ConvexAsyncQuerySubscriber(
+            onError: { message, value in
+                continuation.finish(throwing: ConvexSubscriptionError(message: message, value: value))
+            },
+            onUpdate: { value in
+                do {
+                    let decoded = try decoder.decode(T.self, from: Data(value.utf8))
+                    continuation.yield(decoded)
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        )
         Task {
             do {
                 let encodedArgs = try encodeConvexArgs(args)

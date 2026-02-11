@@ -2129,29 +2129,21 @@ impl SwiftGenerator {
         out.push_str("    var errorDescription: String? { message }\n");
         out.push_str("}\n\n");
 
-        out.push_str(
-            "fileprivate final class ConvexAsyncQuerySubscriber<T: Decodable>: QuerySubscriber {\n",
-        );
-        out.push_str("    private let decoder: JSONDecoder\n");
-        out.push_str(
-            "    private let continuation: AsyncThrowingStream<T, Error>.Continuation\n\n",
-        );
-        out.push_str("    init(decoder: JSONDecoder, continuation: AsyncThrowingStream<T, Error>.Continuation) {\n");
-        out.push_str("        self.decoder = decoder\n");
-        out.push_str("        self.continuation = continuation\n");
+        out.push_str("fileprivate final class ConvexAsyncQuerySubscriber: QuerySubscriber {\n");
+        out.push_str("    private let onErrorHandler: (String, String?) -> Void\n");
+        out.push_str("    private let onUpdateHandler: (String) -> Void\n\n");
+        out.push_str("    init(\n");
+        out.push_str("        onError: @escaping (String, String?) -> Void,\n");
+        out.push_str("        onUpdate: @escaping (String) -> Void\n");
+        out.push_str("    ) {\n");
+        out.push_str("        self.onErrorHandler = onError\n");
+        out.push_str("        self.onUpdateHandler = onUpdate\n");
         out.push_str("    }\n\n");
         out.push_str("    func onError(message: String, value: String?) {\n");
-        out.push_str("        continuation.finish(throwing: ConvexSubscriptionError(message: message, value: value))\n");
+        out.push_str("        onErrorHandler(message, value)\n");
         out.push_str("    }\n\n");
         out.push_str("    func onUpdate(value: String) {\n");
-        out.push_str("        do {\n");
-        out.push_str(
-            "            let decoded = try decoder.decode(T.self, from: Data(value.utf8))\n",
-        );
-        out.push_str("            continuation.yield(decoded)\n");
-        out.push_str("        } catch {\n");
-        out.push_str("            continuation.finish(throwing: error)\n");
-        out.push_str("        }\n");
+        out.push_str("        onUpdateHandler(value)\n");
         out.push_str("    }\n");
         out.push_str("}\n\n");
 
@@ -2166,7 +2158,20 @@ impl SwiftGenerator {
         out.push_str("        continuation.onTermination = { _ in\n");
         out.push_str("            Task { await state.terminate() }\n");
         out.push_str("        }\n");
-        out.push_str("        let subscriber = ConvexAsyncQuerySubscriber(decoder: JSONDecoder(), continuation: continuation)\n");
+        out.push_str("        let decoder = JSONDecoder()\n");
+        out.push_str("        let subscriber = ConvexAsyncQuerySubscriber(\n");
+        out.push_str("            onError: { message, value in\n");
+        out.push_str("                continuation.finish(throwing: ConvexSubscriptionError(message: message, value: value))\n");
+        out.push_str("            },\n");
+        out.push_str("            onUpdate: { value in\n");
+        out.push_str("                do {\n");
+        out.push_str("                    let decoded = try decoder.decode(T.self, from: Data(value.utf8))\n");
+        out.push_str("                    continuation.yield(decoded)\n");
+        out.push_str("                } catch {\n");
+        out.push_str("                    continuation.finish(throwing: error)\n");
+        out.push_str("                }\n");
+        out.push_str("            }\n");
+        out.push_str("        )\n");
         out.push_str("        Task {\n");
         out.push_str("            do {\n");
         out.push_str("                let encodedArgs = try encodeConvexArgs(args)\n");
